@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>🗨️ P2P Chat Demo</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/milligram@1.4.1/dist/milligram.min.css">
+  <style>
+    body { 
+      max-width: 600px; 
+      margin: 2rem auto; 
+      padding: 0 1rem;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    h2 {
+      color: #333;
+      margin-bottom: 0.5rem;
+    }
+    .subtitle {
+      color: #666;
+      margin-bottom: 1rem;
+    }
+    .info-box {
+      background: #e3f2fd;
+      border: 1px solid #90caf9;
+      border-radius: 4px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+    #log { 
+      height: 300px; 
+      overflow-y: auto; 
+      border: 1px solid #ddd; 
+      padding: 1rem; 
+      margin: 1rem 0;
+      background: #f9f9f9;
+      border-radius: 4px;
+    }
+    #log p {
+      margin: 0.5rem 0;
+      padding: 0.5rem;
+      background: white;
+      border-radius: 3px;
+      word-wrap: break-word;
+    }
+    #log p.peer {
+      background: #e3f2fd;
+    }
+    #log p.me {
+      background: #f3e5f5;
+      text-align: right;
+    }
+    #log p.system {
+      background: #fff3e0;
+      font-style: italic;
+      color: #666;
+      font-size: 0.9em;
+    }
+    #log p.error {
+      background: #ffebee;
+      color: #c62828;
+    }
+    #log p.success {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+    .input-group {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    #msg { 
+      flex: 1;
+    }
+    #status {
+      padding: 0.75rem;
+      margin: 1rem 0;
+      border-radius: 4px;
+      text-align: center;
+      font-weight: 500;
+    }
+    #status.connecting {
+      background: #fff3e0;
+      color: #f57c00;
+      border: 1px solid #ffb74d;
+    }
+    #status.connected {
+      background: #e8f5e9;
+      color: #2e7d32;
+      border: 1px solid #81c784;
+    }
+    #status.error {
+      background: #ffebee;
+      color: #c62828;
+      border: 1px solid #ef5350;
+    }
+    #status.empty {
+      display: none;
+    }
+    .button-primary {
+      background-color: #9b4dca;
+      border-color: #9b4dca;
+    }
+    .button-primary:hover:not(:disabled) {
+      background-color: #823eb7;
+      border-color: #823eb7;
+    }
+    .button-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .room-display {
+      background: #263238;
+      color: #aed581;
+      padding: 1rem;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 1.5em;
+      letter-spacing: 0.2em;
+      text-align: center;
+      margin: 0.5rem 0;
+    }
+    .mode-buttons {
+      display: flex;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    .mode-buttons button {
+      flex: 1;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <h2>🔐 P2P Chat (WebRTC + AES-GCM)</h2>
+    <p class="subtitle">End-to-end encrypted peer-to-peer chat using PeerJS</p>
+
+    <div class="info-box">
+      <strong>How it works:</strong> This uses PeerJS's free STUN/TURN servers for connection. Messages are encrypted end-to-end with AES-256-GCM.
+    </div>
+
+    <div id="setupSection">
+      <div class="mode-buttons">
+        <button id="hostBtn" class="button-primary">Host a Room</button>
+        <button id="joinBtn" class="button-primary">Join a Room</button>
+      </div>
+
+      <div id="hostSection" style="display:none;">
+        <h3>Hosting Room</h3>
+        <p>Your Room ID (share this with your peer):</p>
+        <div id="roomDisplay" class="room-display">Generating...</div>
+        <p id="hostStatus">Waiting for peer to connect...</p>
+      </div>
+
+      <div id="joinSection" style="display:none;">
+        <h3>Join Room</h3>
+        <label>Enter Room ID:
+          <input id="peerIdInput" placeholder="e.g. abc-123-xyz" />
+        </label>
+        <button id="connectBtn" class="button-primary">Connect</button>
+      </div>
+    </div>
+
+    <div id="status" class="empty"></div>
+
+    <div id="log"></div>
+
+    <div id="chatSection" style="display:none;">
+      <div class="input-group">
+        <input id="msg" placeholder="Type your message…" />
+        <button id="send" class="button-primary">Send</button>
+      </div>
+      <button id="disconnect">Disconnect</button>
+    </div>
+  </div>
+
+  <!-- Load PeerJS for simplified WebRTC -->
+  <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
+  
+  <script>
+    (function() {
+      // Check if Web Crypto API is available
+      if (!window.crypto || !window.crypto.subtle) {
+        alert('Your browser does not support the Web Crypto API. Please use a modern browser.');
+        return;
+      }
+
+      // ==============================================================
+      // CRYPTO FUNCTIONS
+      // ==============================================================
+      
+      async function deriveKey(password) {
+        const encoder = new TextEncoder();
+        const keyMaterial = await crypto.subtle.importKey(
+          'raw',
+          encoder.encode(password),
+          'PBKDF2',
+          false,
+          ['deriveBits', 'deriveKey']
+        );
+
+        return await crypto.subtle.deriveKey(
+          {
+            name: 'PBKDF2',
+            salt: encoder.encode('p2p-chat-salt-v3'),
+            iterations: 100000,
+            hash: 'SHA-256'
+          },
+          keyMaterial,
+          { name: 'AES-GCM', length: 256 },
+          true,
+          ['encrypt', 'decrypt']
+        );
+      }
+
+      async function encryptMessage(text, key) {
+        const encoder = new TextEncoder();
+        const data = encoder.encode(text);
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        
+        const encrypted = await crypto.subtle.encrypt(
+          { name: 'AES-GCM', iv: iv },
+          key,
+          data
+        );
+        
+        const combined = new Uint8Array(iv.length + encrypted.byteLength);
+        combined.set(iv);
+        combined.set(new Uint8Array(encrypted), iv.length);
+        
+        return combined;
+      }
+
+      async function decryptMessage(combined, key) {
+        const iv = combined.slice(0, 12);
+        const ciphertext = combined.slice(12);
+        
+        const decrypted = await crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: iv },
+          key,
+          ciphertext
+        );
+        
+        return new TextDecoder().decode(decrypted);
+      }
+
+      // ==============================================================
+      // UI ELEMENTS
+      // ==============================================================
+      const hostBtn = document.getElementById('hostBtn');
+      const joinBtn = document.getElementById('joinBtn');
+      const connectBtn = document.getElementById('connectBtn');
+      const disconnectBtn = document.getElementById('disconnect');
+      const statusEl = document.getElementById('status');
+      const logEl = document.getElementById('log');
+      const msgInput = document.getElementById('msg');
+      const sendBtn = document.getElementById('send');
+      const peerIdInput = document.getElementById('peerIdInput');
+      const setupSection = document.getElementById('setupSection');
+      const hostSection = document.getElementById('hostSection');
+      const joinSection = document.getElementById('joinSection');
+      const chatSection = document.getElementById('chatSection');
+      const roomDisplay = document.getElementById('roomDisplay');
+      const hostStatus = document.getElementById('hostStatus');
+
+      // ==============================================================
+      // STATE
+      // ==============================================================
+      let peer = null;
+      let connection = null;
+      let sessionKey = null;
+      let myPeerId = null;
+
+      // ==============================================================
+      // HELPERS
+      // ==============================================================
+      function log(msg, type = 'system') {
+        const p = document.createElement('p');
+        p.textContent = msg;
+        p.className = type;
+        logEl.appendChild(p);
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      function setStatus(msg, type = '') {
+        statusEl.textContent = msg;
+        statusEl.className = type;
+      }
+
+      function generateRoomId() {
+        const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+        let result = '';
+        for (let i = 0; i < 3; i++) {
+          if (i > 0) result += '-';
+          for (let j = 0; j < 3; j++) {
+            result += chars.charAt(Math.floor(Math.random() * chars.length));
+          }
+        }
+        return result;
+      }
+
+      // ==============================================================
+      // PEER CONNECTION
+      // ==============================================================
+      
+      async function setupConnection(conn) {
+        connection = conn;
+        
+        connection.on('open', async () => {
+          log('✅ Connected to peer!', 'success');
+          setStatus('🔗 Connected (encrypted)', 'connected');
+          
+          // Derive encryption key from peer IDs
+          const keySource = [myPeerId, conn.peer].sort().join('-');
+          sessionKey = await deriveKey(keySource);
+          
+          // Show chat UI
+          setupSection.style.display = 'none';
+          chatSection.style.display = 'block';
+          msgInput.focus();
+        });
+
+        connection.on('data', async (data) => {
+          try {
+            // Convert data to Uint8Array if needed
+            const encrypted = new Uint8Array(data);
+            const message = await decryptMessage(encrypted, sessionKey);
+            log(message, 'peer');
+          } catch (err) {
+            console.error('Decryption error:', err);
+            log('⚠️ Failed to decrypt message', 'error');
+          }
+        });
+
+        connection.on('close', () => {
+          log('Connection closed', 'system');
+          cleanup();
+        });
+
+        connection.on('error', (err) => {
+          log(`❌ Connection error: ${err}`, 'error');
+          console.error('Connection error:', err);
+        });
+      }
+
+      function cleanup() {
+        if (connection) {
+          connection.close();
+          connection = null;
+        }
+        if (peer) {
+          peer.destroy();
+          peer = null;
+        }
+        
+        sessionKey = null;
+        myPeerId = null;
+        
+        // Reset UI
+        setupSection.style.display = 'block';
+        hostSection.style.display = 'none';
+        joinSection.style.display = 'none';
+        chatSection.style.display = 'none';
+        hostBtn.disabled = false;
+        joinBtn.disabled = false;
+        msgInput.value = '';
+        peerIdInput.value = '';
+        setStatus('', 'empty');
+      }
+
+      // ==============================================================
+      // EVENT HANDLERS
+      // ==============================================================
+      
+      hostBtn.onclick = () => {
+        hostBtn.disabled = true;
+        joinBtn.disabled = true;
+        hostSection.style.display = 'block';
+        
+        // Generate room ID
+        myPeerId = generateRoomId();
+        roomDisplay.textContent = myPeerId;
+        
+        // Create peer with the room ID
+        peer = new Peer(myPeerId, {
+          debug: 2,
+          config: {
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+          }
+        });
+
+        peer.on('open', (id) => {
+          log(`Room created: ${id}`, 'system');
+          log('Share this Room ID with your peer', 'system');
+        });
+
+        peer.on('connection', (conn) => {
+          log('Peer is connecting...', 'system');
+          hostStatus.textContent = 'Peer connected!';
+          setupConnection(conn);
+        });
+
+        peer.on('error', (err) => {
+          console.error('Peer error:', err);
+          log(`❌ Error: ${err.type}`, 'error');
+          
+          // If ID is taken, generate a new one
+          if (err.type === 'unavailable-id') {
+            myPeerId = generateRoomId();
+            roomDisplay.textContent = myPeerId;
+            peer = new Peer(myPeerId);
+          }
+        });
+      };
+
+      joinBtn.onclick = () => {
+        hostBtn.disabled = true;
+        joinBtn.disabled = true;
+        joinSection.style.display = 'block';
+        peerIdInput.focus();
+      };
+
+      connectBtn.onclick = () => {
+        const peerId = peerIdInput.value.trim();
+        if (!peerId) {
+          alert('Please enter a Room ID');
+          return;
+        }
+        
+        // Generate a random ID for ourselves
+        myPeerId = generateRoomId();
+        
+        // Create peer
+        peer = new Peer(myPeerId, {
+          debug: 2,
+          config: {
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+          }
+        });
+
+        peer.on('open', () => {
+          log(`Connecting to room: ${peerId}`, 'system');
+          setStatus('🔄 Connecting...', 'connecting');
+          
+          // Connect to the host
+          const conn = peer.connect(peerId, {
+            reliable: true
+          });
+          
+          setupConnection(conn);
+        });
+
+        peer.on('error', (err) => {
+          console.error('Peer error:', err);
+          log(`❌ Failed to connect: ${err.type}`, 'error');
+          setStatus('Connection failed', 'error');
+        });
+      };
+
+      sendBtn.onclick = async () => {
+        const text = msgInput.value.trim();
+        if (!text || !connection || !sessionKey) return;
+        
+        try {
+          const encrypted = await encryptMessage(text, sessionKey);
+          connection.send(encrypted);
+          log(text, 'me');
+          msgInput.value = '';
+        } catch (err) {
+          console.error('Send error:', err);
+          log(`❌ Failed to send message`, 'error');
+        }
+      };
+
+      msgInput.onkeypress = (e) => {
+        if (e.key === 'Enter') {
+          sendBtn.click();
+        }
+      };
+
+      peerIdInput.onkeypress = (e) => {
+        if (e.key === 'Enter') {
+          connectBtn.click();
+        }
+      };
+
+      disconnectBtn.onclick = () => {
+        log('Disconnecting...', 'system');
+        cleanup();
+      };
+
+      // ==============================================================
+      // CLEANUP
+      // ==============================================================
+      window.addEventListener('beforeunload', () => {
+        if (connection) connection.close();
+        if (peer) peer.destroy();
+      });
+
+      // ==============================================================
+      // INIT
+      // ==============================================================
+      log('Welcome! Choose to host or join a room.', 'system');
+    })();
+  </script>
+</body>
+</html>
