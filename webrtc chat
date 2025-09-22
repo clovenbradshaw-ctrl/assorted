@@ -148,7 +148,14 @@
         <h3>Hosting Room</h3>
         <p>Your Room ID (share this with your peer):</p>
         <div id="roomDisplay" class="room-display">Generating...</div>
-        <p id="hostStatus">Waiting for peer to connect...</p>
+        
+        <label style="margin-top: 1rem;">Encryption Password (share this securely):
+          <input id="hostPasswordInput" type="password" placeholder="Enter a strong password" />
+        </label>
+        <p style="color: #666; font-size: 0.9em;">⚠️ Share this password through a secure channel (not in the same message as the Room ID)</p>
+        
+        <button id="hostReadyBtn" class="button-primary">Ready to Connect</button>
+        <p id="hostStatus" style="display:none;">Waiting for peer to connect...</p>
       </div>
 
       <div id="joinSection" style="display:none;">
@@ -156,6 +163,11 @@
         <label>Enter Room ID:
           <input id="peerIdInput" placeholder="e.g. abc-123-xyz" />
         </label>
+        
+        <label>Encryption Password:
+          <input id="joinPasswordInput" type="password" placeholder="Enter the shared password" />
+        </label>
+        
         <button id="connectBtn" class="button-primary">Connect</button>
       </div>
     </div>
@@ -261,6 +273,9 @@
       const chatSection = document.getElementById('chatSection');
       const roomDisplay = document.getElementById('roomDisplay');
       const hostStatus = document.getElementById('hostStatus');
+      const hostPasswordInput = document.getElementById('hostPasswordInput');
+      const joinPasswordInput = document.getElementById('joinPasswordInput');
+      const hostReadyBtn = document.getElementById('hostReadyBtn');
 
       // ==============================================================
       // STATE
@@ -302,16 +317,21 @@
       // PEER CONNECTION
       // ==============================================================
       
-      async function setupConnection(conn) {
+      async function setupConnection(conn, password) {
         connection = conn;
         
         connection.on('open', async () => {
           log('✅ Connected to peer!', 'success');
-          setStatus('🔗 Connected (encrypted)', 'connected');
+          setStatus('🔗 Connected (encrypted with your password)', 'connected');
           
-          // Derive encryption key from peer IDs
-          const keySource = [myPeerId, conn.peer].sort().join('-');
-          sessionKey = await deriveKey(keySource);
+          // Derive encryption key from the shared password
+          if (!password) {
+            log('⚠️ No password provided - messages will not be encrypted!', 'error');
+            return;
+          }
+          
+          sessionKey = await deriveKey(password);
+          log('🔐 Encryption enabled with shared password', 'system');
           
           // Show chat UI
           setupSection.style.display = 'none';
@@ -321,13 +341,17 @@
 
         connection.on('data', async (data) => {
           try {
+            if (!sessionKey) {
+              log('⚠️ No encryption key - cannot decrypt message', 'error');
+              return;
+            }
             // Convert data to Uint8Array if needed
             const encrypted = new Uint8Array(data);
             const message = await decryptMessage(encrypted, sessionKey);
             log(message, 'peer');
           } catch (err) {
             console.error('Decryption error:', err);
-            log('⚠️ Failed to decrypt message', 'error');
+            log('⚠️ Failed to decrypt message (wrong password?)', 'error');
           }
         });
 
@@ -380,6 +404,20 @@
         myPeerId = generateRoomId();
         roomDisplay.textContent = myPeerId;
         
+        log('Room ID generated. Enter a password and click Ready.', 'system');
+      };
+
+      hostReadyBtn.onclick = () => {
+        const password = hostPasswordInput.value.trim();
+        if (!password) {
+          alert('Please enter an encryption password');
+          return;
+        }
+        
+        hostReadyBtn.style.display = 'none';
+        hostStatus.style.display = 'block';
+        hostPasswordInput.disabled = true;
+        
         // Create peer with the room ID
         peer = new Peer(myPeerId, {
           debug: 2,
@@ -393,13 +431,13 @@
 
         peer.on('open', (id) => {
           log(`Room created: ${id}`, 'system');
-          log('Share this Room ID with your peer', 'system');
+          log('Share the Room ID and password (separately) with your peer', 'system');
         });
 
         peer.on('connection', (conn) => {
           log('Peer is connecting...', 'system');
           hostStatus.textContent = 'Peer connected!';
-          setupConnection(conn);
+          setupConnection(conn, password);
         });
 
         peer.on('error', (err) => {
@@ -424,8 +462,15 @@
 
       connectBtn.onclick = () => {
         const peerId = peerIdInput.value.trim();
+        const password = joinPasswordInput.value.trim();
+        
         if (!peerId) {
           alert('Please enter a Room ID');
+          return;
+        }
+        
+        if (!password) {
+          alert('Please enter the encryption password');
           return;
         }
         
@@ -452,7 +497,7 @@
             reliable: true
           });
           
-          setupConnection(conn);
+          setupConnection(conn, password);
         });
 
         peer.on('error', (err) => {
